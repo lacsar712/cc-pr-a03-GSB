@@ -3,6 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <title>印刷套准复核台</title>
+    <style>
+      body { font-family: "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; background: #f5f6f8; color: #222; }
+      main { max-width: 980px; margin: 0 auto; padding: 16px; }
+      nav { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; }
+      nav button { padding: 6px 14px; border: 1px solid #bbb; border-radius: 6px; background: #fff; cursor: pointer; }
+      nav button.active { background: #1f5fbf; border-color: #1f5fbf; color: #fff; font-weight: bold; }
+      nav .who { margin-left: auto; color: #555; font-size: 14px; }
+      table { border-collapse: collapse; width: 100%; background: #fff; }
+      th, td { border: 1px solid #ddd; padding: 6px 8px; text-align: left; font-size: 14px; }
+      th { background: #f0f2f5; }
+      input { padding: 5px 8px; margin-right: 6px; }
+      button { cursor: pointer; }
+      .zone { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 4px 16px 14px; margin-bottom: 16px; }
+      .zone h3 { margin: 12px 0 8px; color: #444; }
+      .gate-banner { padding: 10px 14px; border-radius: 6px; font-weight: bold; margin: 8px 0; }
+      .gate-banner.blocked { background: #fdecea; color: #b3261e; }
+      .gate-banner.open { background: #e6f4ea; color: #1e7e34; }
+      .chip { display: inline-block; background: #b3261e; color: #fff; border-radius: 10px; padding: 1px 8px; margin: 0 2px; font-size: 13px; }
+      .error-box { background: #fdecea; color: #b3261e; padding: 8px 12px; border-radius: 6px; }
+      .error-box .chip { background: #8f1d16; }
+      .link-btn { margin-left: 10px; padding: 3px 10px; border: 1px solid #b3261e; border-radius: 6px; background: #fff; color: #b3261e; }
+      .hint { color: #777; font-size: 14px; }
+      .event-released { color: #1e7e34; font-weight: bold; }
+      .event-blocked { color: #b3261e; font-weight: bold; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

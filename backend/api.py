@@ -18,6 +18,8 @@ USERS = {
     "checker": {"role": "reader", "password_hash": pwd.hash("check123456")},
 }
 
+IN_FLIGHT_STATUSES = ("pending", "running")
+
 
 def connect():
     return psycopg.connect(DSN, row_factory=dict_row)
@@ -35,6 +37,17 @@ CREATE TABLE IF NOT EXISTS jobs (
     created_by text NOT NULL,
     created_at timestamptz NOT NULL
 );
+CREATE TABLE IF NOT EXISTS gate_events (
+    id serial PRIMARY KEY,
+    sheet text NOT NULL,
+    event text NOT NULL,
+    actor text NOT NULL,
+    job_id integer,
+    conflict_ids integer[] NOT NULL DEFAULT '{}',
+    detail text NOT NULL DEFAULT '',
+    created_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS gate_events_sheet_idx ON gate_events (sheet);
 """
 
 
@@ -65,6 +78,10 @@ def require_writer(user: dict = Depends(current_user)) -> dict:
     if user["role"] != "writer":
         raise HTTPException(status_code=403, detail="仅印刷员可送复核")
     return user
+
+
+def fmt_ids(ids: list[int]) -> str:
+    return "、".join(f"#{i}" for i in ids)
 
 
 app = FastAPI(title="印刷套准复核台")
@@ -112,12 +129,103 @@ def list_jobs(_user: dict = Depends(current_user)):
 
 @app.post("/api/jobs", status_code=202)
 def enqueue(body: JobIn, user: dict = Depends(require_writer)):
+    sheet = body.sheet.strip()
+    if not sheet:
+        raise HTTPException(status_code=400, detail="印张名不能为空")
+    now = datetime.now(timezone.utc)
+    conflict_ids: list[int] = []
+    row = None
     with connect() as conn:
-        row = conn.execute(
-            """INSERT INTO jobs (sheet, cyan_mm, magenta_mm, status, created_by, created_at)
-               VALUES (%s, %s, %s, 'pending', %s, %s)
-               RETURNING id, sheet, status, verdict""",
-            (body.sheet.strip(), body.cyan_mm, body.magenta_mm, user["username"], datetime.now(timezone.utc)),
-        ).fetchone()
+        # 同名投递串行化，防止并发下双双放行
+        conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (sheet,))
+        inflight = conn.execute(
+            "SELECT id FROM jobs WHERE sheet = %s AND status = ANY(%s) ORDER BY id",
+            (sheet, list(IN_FLIGHT_STATUSES)),
+        ).fetchall()
+        if inflight:
+            conflict_ids = [r["id"] for r in inflight]
+            conn.execute(
+                """INSERT INTO gate_events (sheet, event, actor, conflict_ids, detail, created_at)
+                   VALUES (%s, 'blocked', %s, %s, %s, %s)""",
+                (
+                    sheet,
+                    user["username"],
+                    conflict_ids,
+                    f"同名在途（待处理或领取中），退回投递；冲突编号 {fmt_ids(conflict_ids)}",
+                    now,
+                ),
+            )
+        else:
+            row = conn.execute(
+                """INSERT INTO jobs (sheet, cyan_mm, magenta_mm, status, created_by, created_at)
+                   VALUES (%s, %s, %s, 'pending', %s, %s)
+                   RETURNING id, sheet, status, verdict""",
+                (sheet, body.cyan_mm, body.magenta_mm, user["username"], now),
+            ).fetchone()
+            conn.execute(
+                """INSERT INTO gate_events (sheet, event, actor, job_id, conflict_ids, detail, created_at)
+                   VALUES (%s, 'released', %s, %s, %s, %s, %s)""",
+                (
+                    sheet,
+                    user["username"],
+                    row["id"],
+                    [],
+                    f"无在途同名，放行新编号 #{row['id']}",
+                    now,
+                ),
+            )
         conn.commit()
+    if conflict_ids:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"印张「{sheet}」已有在途同名（待处理或领取中），本次投递被退回",
+                "conflict_ids": conflict_ids,
+            },
+        )
     return row
+
+
+@app.get("/api/gate/status")
+def gate_status(sheet: str = "", _user: dict = Depends(current_user)):
+    name = sheet.strip()
+    with connect() as conn:
+        inflight = conn.execute(
+            """SELECT id, sheet, status, cyan_mm, magenta_mm, created_by, created_at
+               FROM jobs WHERE sheet = %s AND status = ANY(%s) ORDER BY id""",
+            (name, list(IN_FLIGHT_STATUSES)),
+        ).fetchall()
+        concluded = conn.execute(
+            """SELECT id, sheet, status, verdict, reason, cyan_mm, magenta_mm, created_by, created_at
+               FROM jobs WHERE sheet = %s AND status = 'done' ORDER BY id DESC""",
+            (name,),
+        ).fetchall()
+    conflict_ids = [r["id"] for r in inflight]
+    if conflict_ids:
+        release = f"等冲突编号 {fmt_ids(conflict_ids)} 出结论（状态变为已出结论）后自动解除，届时可再投同名"
+    else:
+        release = "当前无在途同名，可直接投递；历史已结论不拦截新投递"
+    return {
+        "sheet": name,
+        "blocked": bool(conflict_ids),
+        "conflict_ids": conflict_ids,
+        "release_condition": release,
+        "inflight": inflight,
+        "concluded": concluded,
+    }
+
+
+@app.get("/api/gate/events")
+def list_gate_events(sheet: str = "", _user: dict = Depends(current_user)):
+    name = sheet.strip()
+    with connect() as conn:
+        if name:
+            return conn.execute(
+                """SELECT id, sheet, event, actor, job_id, conflict_ids, detail, created_at
+                   FROM gate_events WHERE sheet = %s ORDER BY id DESC LIMIT 200""",
+                (name,),
+            ).fetchall()
+        return conn.execute(
+            """SELECT id, sheet, event, actor, job_id, conflict_ids, detail, created_at
+               FROM gate_events ORDER BY id DESC LIMIT 200"""
+        ).fetchall()

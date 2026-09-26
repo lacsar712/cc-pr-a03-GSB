@@ -8,6 +8,9 @@ from rules import judge
 
 DSN = os.environ["DATABASE_URL"]
 
+# 领取后模拟演算耗时，让“领取中”在页面上可被看到
+COMPUTE_SECONDS = 2.0
+
 
 def connect():
     last = None
@@ -32,6 +35,18 @@ def ensure():
                 verdict text NOT NULL DEFAULT '',
                 reason text NOT NULL DEFAULT '',
                 created_by text NOT NULL,
+                created_at timestamptz NOT NULL
+            )"""
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS gate_events (
+                id serial PRIMARY KEY,
+                sheet text NOT NULL,
+                event text NOT NULL,
+                actor text NOT NULL,
+                job_id integer,
+                conflict_ids integer[] NOT NULL DEFAULT '{}',
+                detail text NOT NULL DEFAULT '',
                 created_at timestamptz NOT NULL
             )"""
         )
@@ -60,17 +75,19 @@ def main():
     while True:
         with connect() as conn:
             row = claim_once(conn)
-            if row is None:
-                conn.commit()
-            else:
-                verdict, reason = judge(row["cyan_mm"], row["magenta_mm"])
-                conn.execute(
-                    "UPDATE jobs SET status = 'done', verdict = %s, reason = %s WHERE id = %s",
-                    (verdict, reason, row["id"]),
-                )
-                conn.commit()
+            conn.commit()
         if row is None:
             time.sleep(0.4)
+            continue
+        # 已领走（领取中），演算结束后再写回结论
+        time.sleep(COMPUTE_SECONDS)
+        verdict, reason = judge(row["cyan_mm"], row["magenta_mm"])
+        with connect() as conn:
+            conn.execute(
+                "UPDATE jobs SET status = 'done', verdict = %s, reason = %s WHERE id = %s",
+                (verdict, reason, row["id"]),
+            )
+            conn.commit()
 
 
 if __name__ == "__main__":
