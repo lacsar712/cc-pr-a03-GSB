@@ -35,6 +35,11 @@ def ensure():
                 created_at timestamptz NOT NULL
             )"""
         )
+        # 同名互斥门禁的硬约束：仅在途编号占用印张名，结论后自动放行
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS jobs_sheet_open_uidx
+                   ON jobs (sheet) WHERE status IN ('pending', 'running')"""
+        )
         conn.commit()
 
 
